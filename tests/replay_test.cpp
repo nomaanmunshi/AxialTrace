@@ -109,3 +109,109 @@ TEST(Control, RejectsUnsupportedSpeedAndScenarioArguments) {
     EXPECT_THROW(simulate("jam", -1), std::invalid_argument);
     EXPECT_THROW(simulate("jam", 64), std::invalid_argument);
 }
+
+TEST(Replay, FaultSweepCoversLastSampleAndTruncatedWindows) {
+    for (const auto scenario : {"jam", "frozen"}) {
+        for (const int speed : {100, 1000}) {
+            for (int fault = 0; fault < 64; ++fault) {
+                std::ostringstream csv;
+                write_trace(csv, simulate(scenario, fault, 64, speed));
+                std::istringstream input(csv.str());
+                EXPECT_TRUE(verify(read_replay(input)).empty())
+                    << scenario << " fault=" << fault << " speed=" << speed;
+            }
+        }
+    }
+    EXPECT_TRUE(simulate("jam", 51)[63].stopped);
+    EXPECT_FALSE(simulate("jam", 52)[63].stopped);
+}
+
+TEST(Replay, MovementJustBeforeDeadlineRestartsObservationWindow) {
+    Replay replay{4, {
+        {0, 80, 0, 1, false}, {1, 80, 0, 1, false}, {2, 80, 0, 1, false},
+        {3, 80, 1, 1, false}, {4, 80, 1, 1, false}, {5, 80, 1, 1, false},
+        {6, 80, 1, 1, false}, {7, 80, 1, 0, true}}};
+    EXPECT_TRUE(verify(replay).empty());
+}
+
+TEST(Replay, ZeroCommandBreaksQuietInterval) {
+    Replay replay{4, {
+        {0, 80, 0, 1, false}, {1, 80, 0, 1, false}, {2, 80, 0, 1, false},
+        {3, 80, 0, 0, false}, {4, 80, 0, 1, false}, {5, 80, 0, 1, false},
+        {6, 80, 0, 1, false}, {7, 80, 0, 1, false}, {8, 80, 0, 0, true}}};
+    EXPECT_TRUE(verify(replay).empty());
+}
+
+TEST(Replay, ChangingCommandDirectionDoesNotHideMissingFeedback) {
+    Replay replay{4, {
+        {0, 80, 0, 1, false}, {1, 80, 0, 1, false}, {2, 80, 0, -1, false},
+        {3, 80, 0, -1, false}, {4, 80, 0, 0, true}}};
+    EXPECT_TRUE(verify(replay).empty());
+}
+
+TEST(Replay, ReportsNeverObservedStop) {
+    Replay replay{2, {
+        {0, 80, 0, 1, false}, {1, 80, 0, 1, false}, {2, 80, 0, 1, false}}};
+    const auto issues = verify(replay);
+    ASSERT_FALSE(issues.empty());
+    EXPECT_EQ(issues.front().tick, 2);
+    EXPECT_EQ(issues.front().expected_stop, 2);
+    EXPECT_EQ(issues.front().observed_stop, -1);
+}
+
+TEST(Replay, ReadsWindowsLineEndingsAndLegacyPolicy) {
+    std::ifstream fixture(FIXTURE_DIR "/correct_stop.csv");
+    std::string text((std::istreambuf_iterator<char>(fixture)), {});
+    size_t position = 0;
+    while ((position = text.find('\n', position)) != std::string::npos) {
+        text.insert(position, "\r");
+        position += 2;
+    }
+    std::istringstream input(text);
+    const auto replay = read_replay(input);
+    EXPECT_EQ(replay.quiet_ticks, 4);
+    EXPECT_TRUE(verify(replay).empty());
+}
+
+TEST(Replay, RejectsInvalidMetadataAndExtraColumns) {
+    for (const auto metadata : {
+        "# axialtrace,2,step_us=10000,quiet_limit=0",
+        "# axialtrace,2,step_us=10000,quiet_limit=-1",
+        "# axialtrace,2,step_us=10000,quiet_limit=100001",
+        "# axialtrace,3,step_us=10000,quiet_limit=12",
+        "# axialtrace,2,step_us=5000,quiet_limit=12"}) {
+        std::istringstream input(std::string(metadata) +
+            "\ntick,target,encoder,command,position,velocity,stopped\n0,80,0,1,0,0,0\n");
+        EXPECT_THROW(read_replay(input), std::runtime_error);
+    }
+    std::istringstream extra(
+        "tick,target,encoder,command,position,velocity,stopped\n0,80,0,1,0,0,0,extra\n");
+    EXPECT_THROW(read_replay(extra), std::runtime_error);
+}
+
+TEST(Replay, IgnoresPhysicsEvenWhenControllerOutputIsFaulty) {
+    auto samples = simulate("jam", 0, 16);
+    samples[12].stopped = false;
+    samples[12].command = 1000;
+    std::ostringstream original;
+    write_trace(original, samples);
+    std::istringstream first(original.str());
+    const auto expected = verify(read_replay(first));
+    ASSERT_FALSE(expected.empty());
+
+    for (auto& row : samples) {
+        row.position = 999999;
+        row.velocity = -999999;
+    }
+    std::ostringstream changed;
+    write_trace(changed, samples);
+    std::istringstream second(changed.str());
+    const auto actual = verify(read_replay(second));
+    ASSERT_EQ(actual.size(), expected.size());
+    for (size_t i = 0; i < actual.size(); ++i) {
+        EXPECT_EQ(actual[i].tick, expected[i].tick);
+        EXPECT_EQ(actual[i].expected_stop, expected[i].expected_stop);
+        EXPECT_EQ(actual[i].observed_stop, expected[i].observed_stop);
+        EXPECT_EQ(actual[i].reason, expected[i].reason);
+    }
+}

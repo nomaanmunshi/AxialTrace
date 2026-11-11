@@ -29,5 +29,6 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
             -DPROGRAM=$<TARGET_FILE:axialtrace>
             -DFIXTURES=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures
+            -DEXAMPLES=${CMAKE_CURRENT_SOURCE_DIR}/examples
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli.cmake)
 endif()

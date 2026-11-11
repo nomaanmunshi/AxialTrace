@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iosfwd>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -39,5 +40,6 @@ struct Sample {
     bool stopped;
 };
 
-std::vector<Sample> simulate(std::string_view scenario, int fault_tick = 7, int ticks = 64);
+std::vector<Sample> simulate(std::string_view scenario, int fault_tick = 7, int ticks = 64,
+                             std::optional<int> speed = std::nullopt);
 void write_trace(std::ostream& out, const std::vector<Sample>& samples);

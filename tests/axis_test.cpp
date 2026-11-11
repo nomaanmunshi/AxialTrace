@@ -1,6 +1,7 @@
 #include "axis.hpp"
 #include <gtest/gtest.h>
 #include <sstream>
+#include <limits>
 
 TEST(Motion, ReversalRespectsAcceleration) {
     Actuator axis;
@@ -75,5 +76,63 @@ TEST(Trace, EveryScenarioRepeatsByteForByte) {
         write_trace(first, simulate(scenario));
         write_trace(second, simulate(scenario));
         EXPECT_EQ(first.str(), second.str()) << scenario;
+    }
+}
+
+TEST(Motion, ExtremeCommandsDoNotOverflowDuringReversal) {
+    Actuator axis;
+    axis.position = 50000;
+    axis.velocity = 1000;
+    axis.step(std::numeric_limits<int>::min(), false);
+    EXPECT_EQ(axis.velocity, 0);
+    EXPECT_EQ(axis.position, 50000);
+    axis.velocity = -1000;
+    axis.step(std::numeric_limits<int>::max(), false);
+    EXPECT_EQ(axis.velocity, 0);
+    EXPECT_EQ(axis.position, 50000);
+}
+
+TEST(Control, SlowFaultDeadlineIncludesEarlierQuietReadings) {
+    for (const auto scenario : {"jam", "frozen"}) {
+        const auto rows = simulate(scenario, 7, 32, 100);
+        EXPECT_EQ(rows[5].encoder, 1);
+        EXPECT_FALSE(rows[16].stopped);
+        EXPECT_TRUE(rows[17].stopped);
+        EXPECT_EQ(rows[17].command, 0);
+    }
+}
+
+TEST(Control, QuantizationIsToleratedInBothDirectionsAtEverySupportedSpeed) {
+    for (int speed = 100; speed <= 1000; ++speed) {
+        for (int phase = 0; phase < 1000; phase += 100) {
+            for (const int target : {20, 80}) {
+                Actuator axis;
+                axis.position = 50000 + phase;
+                Encoder encoder;
+                Controller controller(speed);
+                for (int tick = 0; tick < 120; ++tick) {
+                    const int command = controller.update(target, encoder.sample(axis.position, false));
+                    ASSERT_FALSE(controller.stopped()) << speed << " " << phase << " " << target;
+                    axis.step(command, false);
+                }
+            }
+        }
+    }
+}
+
+TEST(Control, FaultLatchHoldsAfterMeasurementsRecover) {
+    Controller controller;
+    for (int tick = 0; tick <= 12; ++tick) controller.update(80, 0);
+    ASSERT_TRUE(controller.stopped());
+    EXPECT_EQ(controller.update(0, 20), 0);
+    EXPECT_EQ(controller.update(80, 30), 0);
+    EXPECT_TRUE(controller.stopped());
+}
+
+TEST(Control, FaultAfterArrivalDoesNotTriggerFalseStop) {
+    for (const auto scenario : {"jam", "frozen"}) {
+        const auto rows = simulate(scenario, 90, 128);
+        for (const auto& row : rows) EXPECT_FALSE(row.stopped);
+        EXPECT_EQ(rows.back().encoder, 80);
     }
 }

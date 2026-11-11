@@ -1,5 +1,6 @@
 #include "axis.hpp"
 #include <algorithm>
+#include <cstdint>
 #include <locale>
 #include <ostream>
 #include <stdexcept>
@@ -10,8 +11,10 @@ void Actuator::step(int command, bool jammed) {
         return;
     }
     // Velocity changes by at most one encoder count per tick.
-    velocity += std::clamp(command - velocity, -1000, 1000);
-    position = std::clamp(position + velocity, 0, 100000);
+    const auto difference = static_cast<std::int64_t>(command) - velocity;
+    velocity += static_cast<int>(std::clamp<std::int64_t>(difference, -1000, 1000));
+    position = static_cast<int>(std::clamp<std::int64_t>(
+        static_cast<std::int64_t>(position) + velocity, 0, 100000));
     if ((position == 0 && velocity < 0) || (position == 100000 && velocity > 0))
         velocity = 0;
 }
@@ -38,7 +41,8 @@ int Controller::update(int target, int measured) {
     return command_;
 }
 
-std::vector<Sample> simulate(std::string_view scenario, int fault_tick, int ticks) {
+std::vector<Sample> simulate(std::string_view scenario, int fault_tick, int ticks,
+                             std::optional<int> speed) {
     if (scenario != "forward" && scenario != "arrival" && scenario != "reversal" &&
         scenario != "limits" && scenario != "jam" && scenario != "frozen" &&
         scenario != "slow")
@@ -46,7 +50,7 @@ std::vector<Sample> simulate(std::string_view scenario, int fault_tick, int tick
     if (ticks < 1 || ticks > 100000 || fault_tick < 0 || fault_tick >= ticks)
         throw std::invalid_argument("require 1 <= ticks <= 100000 and 0 <= fault-tick < ticks");
     Actuator axis;
-    Controller controller(scenario == "slow" ? 100 : 1000);
+    Controller controller(speed.value_or(scenario == "slow" ? 100 : 1000));
     Encoder encoder;
     std::vector<Sample> rows;
     rows.reserve(ticks);
